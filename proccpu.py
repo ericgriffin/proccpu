@@ -218,10 +218,12 @@ def display_help():
     help_msg = 'Usage: proccpu [OPTION]...\n' \
                '\n' \
                '  -h, -help                   Show this help\n' \
-               '  -c <cpu1>[,cpu2,...cpuN]    Specifies the CPUs to check - tasks on all other CPUs are ignored\n'\
+               '  -c <cpu1>[,cpu2,...cpuN]    Specifies the CPUs to check - threads on all other CPUs are ignored\n'\
                '  -f, --full-args             Show full command-line arguments for processes and tasks\n' \
                '  -s, --sparse                Sparse logging only logs when new processes are started\n' \
-               '  -w <N>                      Check processes/tasks every N milliseconds\n' \
+               '  -n <proc1>[,proc2,...procN] Only show threads/processes with the specified names\n' \
+               '  -p <PID1>[,PID2,...PIDN]    Only show threads/processes with the specified PIDs\n' \
+               '  -w <N>                      Check threads/processes every N milliseconds\n' \
                '  -d (start|stop|restart)     Start, stop, or restart proccpu as a daemon\n' \
                '  -l <logfile>                Logfile path when running proccpu as a daemon (-d)\n\n'
     return help_msg
@@ -282,20 +284,7 @@ def get_cmd_name(pid, split_args):
     return cmd
 
 
-def human(num, power="K", units=None):
-    if num == 0.0:
-        return ""
-    if units is None:
-        powers = ["K", "M", "G", "T"]
-        while num >= 1000:  # 4 digits
-            num /= 1024.0
-            power = powers[powers.index(power) + 1]
-        return "%.1f %sB" % (num, power)
-    else:
-        return "%.f" % ((num * 1024) / units)
-
-
-def get_cpu_affinity(pids_to_show, cpus_to_show, split_args, include_self=True, only_self=False):
+def get_cpu_affinity(pids_to_show, proc_names_to_show, cpus_to_show, split_args, include_self=True, only_self=False):
     tasks = {}
 
     for procpid in os.listdir(proc.path('')):
@@ -325,8 +314,15 @@ def get_cpu_affinity(pids_to_show, cpus_to_show, split_args, include_self=True, 
                     for line in proc.open(procpid, 'task', pid, 'stat').readlines():
                         cpu = re.split('\(.*\)| ', line)[39]
                         if cpus_to_show is None or int(cpu) in cpus_to_show:
+                            add = 1
                             cmd = get_cmd_name(pid, split_args)
-                            tasks[pid] = (cpu, cmd, proccmd)
+
+                            if proc_names_to_show is not None:
+                                add = 0
+                                if cmd in proc_names_to_show or proccmd in proc_names_to_show:
+                                    add = 1
+                            if add == 1:
+                                tasks[pid] = (cpu, cmd, proccmd)
 
             except LookupError:
                 # kernel threads don't have exe links or process is gone
@@ -395,7 +391,7 @@ class ProcCPUDaemon(Daemon):
             proccpu_main(True)
 
 
-def print_cpu_usage(tasks, last_tasks=None, sparse=False, daemonize=False, logfile=None):
+def print_cpu_usage(tasks, last_tasks=None, sparse=False, daemonize=False, logfile=None, proc_names_to_show=None):
     sorted_tasks = [x for x in tasks.iteritems()]
     sorted_tasks.sort(key=lambda x: x[1][0])  # sort by cpu
 
@@ -448,9 +444,6 @@ def proccpu_main(daemonize=False):
     if watch is not None:
         try:
             while True:
-                if proc_names_to_show is not None:
-                    pids_to_show = find_pids(proc_names_to_show)
-
                 if not sparse:
                     timestamp = datetime.now()
                     if daemonize:
@@ -461,16 +454,16 @@ def proccpu_main(daemonize=False):
 
                 last_tasks = tasks
 
-                tasks = get_cpu_affinity(pids_to_show, cpus_to_show, split_args)
-                print_cpu_usage(tasks, last_tasks, sparse, daemonize, logfile)
+                tasks = get_cpu_affinity(pids_to_show, proc_names_to_show, cpus_to_show, split_args)
+                print_cpu_usage(tasks, last_tasks, sparse, daemonize, logfile, proc_names_to_show)
 
                 time.sleep(watch / 1000)  # milliseconds
 
         except KeyboardInterrupt:
             pass
     else:
-        tasks = get_cpu_affinity(pids_to_show, cpus_to_show, split_args)
-        print_cpu_usage(tasks, None, sparse, daemonize, logfile)
+        tasks = get_cpu_affinity(pids_to_show, proc_names_to_show, cpus_to_show, split_args)
+        print_cpu_usage(tasks, None, sparse, daemonize, logfile, proc_names_to_show)
 
     sys.stdout.close()
     if daemonize:
